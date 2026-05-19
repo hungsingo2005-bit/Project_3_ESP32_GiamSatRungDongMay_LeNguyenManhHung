@@ -1,0 +1,187 @@
+#include <WiFi.h>
+#include <WiFiClientSecure.h>   // NEW: dùng SSL
+#include <PubSubClient.h>
+#include <Wire.h>
+#include <MPU6050.h>
+
+// ===== WIFI =====
+const char* ssid = "Hào Hùng Phát 2";
+const char* password = "Lenguyenmanhhung0901";
+
+// ===== MQTT (BROKER RIÊNG) =====
+const char* mqtt_server = "c542be78d0cb4caba47847e0f90e97f5.s1.eu.hivemq.cloud";
+const char* mqtt_user = "lenguyenmanhhung";
+const char* mqtt_pass = "Manhhung05";
+
+// ===== CHÂN CẢNH BÁO =====
+#define LED_PIN 2
+#define BUZZER_PIN 23
+
+// ===== OBJECT =====
+WiFiClientSecure espClient;   // NEW
+PubSubClient client(espClient);
+MPU6050 mpu;
+
+// ===== BIẾN =====
+bool sendData = true;
+int16_t ax, ay, az;
+int last_ax = 0, last_ay = 0;
+bool buzzerState = false;
+unsigned long lastBeepTime = 0;
+
+// ===== WIFI =====
+void setup_wifi() {
+  Serial.print("Connecting WiFi...");
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("\nWiFi connected!");
+}
+
+// ===== MQTT CALLBACK =====
+void callback(char* topic, byte* payload, unsigned int length) {
+  String msg = "";
+
+  for (int i = 0; i < length; i++) {
+    msg += (char)payload[i];
+  }
+
+  msg.trim();
+
+  Serial.print("Received: ");
+  Serial.println(msg);
+
+  if (msg == "OFF" || msg == "STOP") {
+    sendData = false;
+    Serial.println("STOP sending");
+    Serial.println("Paused...");
+  } 
+  else if (msg == "ON" || msg == "START") {
+    sendData = true;
+    Serial.println("START sending");
+    delay(1000);  // tối ưu tránh lag
+  }
+}
+
+// ===== MQTT CONNECT =====
+void reconnect() {
+  while (!client.connected()) {
+    Serial.print("Connecting MQTT...");
+
+    String clientId = "ESP32_HUNG" + String(random(1000, 9999));
+
+    if (client.connect(clientId.c_str(), mqtt_user, mqtt_pass)) {
+      Serial.println("connected!");
+
+      client.subscribe("hung123/control");  // nhận ON/OFF
+
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" retry...");
+      delay(2000);
+    }
+  }
+}
+
+// ===== SETUP =====
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+
+  randomSeed(analogRead(0));
+
+  setup_wifi();
+
+  // ===== SSL =====
+  espClient.setInsecure();   // NEW: bỏ check chứng chỉ cho dễ dùng
+
+  client.setServer(mqtt_server, 8883);  // SSL port
+  client.setCallback(callback);
+
+  // ===== MPU6050 =====
+  Wire.begin(21, 22);
+  mpu.initialize();
+
+  if (mpu.testConnection()) {
+    Serial.println("MPU6050 OK");
+  } else {
+    Serial.println("MPU6050 FAIL");
+  }
+}
+
+// ===== LOOP =====
+void loop() {
+  if (!client.connected()) {
+    reconnect();
+  }
+
+  client.loop();
+
+  if (sendData) {
+
+    // ===== ĐỌC MPU =====
+    mpu.getAcceleration(&ax, &ay, &az);
+
+    // ===== TÍNH RUNG =====
+    int diff_ax = abs(ax - last_ax);
+    int diff_ay = abs(ay - last_ay);
+
+    bool strongVibration = false;
+
+    String status;
+
+    if (diff_ax > 4000 || diff_ay > 4000) {
+      status = "RUNG MANH";
+      strongVibration = true;
+      digitalWrite(LED_PIN, HIGH);
+    } else if (diff_ax > 1000 || diff_ay > 1000) {
+      status = "RUNG NHE";
+      digitalWrite(LED_PIN, HIGH);
+      digitalWrite(BUZZER_PIN, LOW);
+    } else {
+      status = "BINH THUONG";
+      digitalWrite(LED_PIN, LOW);
+      digitalWrite(BUZZER_PIN, LOW);
+      buzzerState = false;  // ✅ reset trạng thái còi
+    }
+
+    // ===== CÒI BÍP BÍP (KHÔNG DELAY) =====
+    if (strongVibration) {
+      if (millis() - lastBeepTime > 150) {  // tốc độ bíp
+        buzzerState = !buzzerState;
+        digitalWrite(BUZZER_PIN, buzzerState);
+        lastBeepTime = millis();
+      }
+    }
+
+    // ===== CẬP NHẬT =====
+    last_ax = ax;
+    last_ay = ay;
+
+    // ===== GỬI JSON =====
+    char msg[100];
+    sprintf(msg,
+      "\"ax\":%d,\"ay\":%d,\"az\":%d,\"%s\"",
+      ax, ay, az, status.c_str()
+    );
+
+    // ===== GỬI DATA =====
+    client.publish("hung123/test", msg);
+    client.publish("hung123/ax", String(ax).c_str());
+    client.publish("hung123/ay", String(ay).c_str());
+    client.publish("hung123/az", String(az).c_str());
+
+    // ===== DEBUG =====
+    Serial.println(msg);
+
+  }
+
+  delay(500);  // tối ưu tránh lag
+}

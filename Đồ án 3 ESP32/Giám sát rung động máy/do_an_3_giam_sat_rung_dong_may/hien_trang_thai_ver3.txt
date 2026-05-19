@@ -1,0 +1,142 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <Wire.h>
+#include <MPU6050.h>
+
+// ===== WIFI =====
+const char* ssid = "Hào Hùng Phát 2";
+const char* password = "Lenguyenmanhhung0901";
+
+// ===== MQTT =====
+const char* mqtt_server = "broker.hivemq.com";
+
+// ===== CHÂN CẢNH BÁO =====
+#define LED_PIN 2
+#define BUZZER_PIN 4
+
+// ===== OBJECT =====
+WiFiClient espClient;
+PubSubClient client(espClient);
+MPU6050 mpu;
+
+// ===== BIẾN =====
+bool sendData = true;
+int16_t ax, ay, az;
+int last_ax = 0;
+
+// ===== WIFI =====
+void setup_wifi() {
+  Serial.print("Connecting WiFi...");
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("\nWiFi connected!");
+}
+
+// ===== MQTT CALLBACK =====
+void callback(char* topic, byte* payload, unsigned int length) {
+  String msg = "";
+
+  for (int i = 0; i < length; i++) {
+    msg += (char)payload[i];
+  }
+
+  msg.trim();
+
+  if (msg == "OFF") sendData = false;
+  if (msg == "ON") sendData = true;
+}
+
+// ===== MQTT CONNECT =====
+void reconnect() {
+  while (!client.connected()) {
+    String clientId = "ESP32_" + String(random(1000, 9999));
+
+    if (client.connect(clientId.c_str())) {
+      client.subscribe("hung123/control");
+    } else {
+      delay(2000);
+    }
+  }
+}
+
+// ===== SETUP =====
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+
+  randomSeed(analogRead(0));
+
+  setup_wifi();
+
+  client.setServer(mqtt_server, 1883);
+  client.setCallback(callback);
+
+  Wire.begin(21, 22);
+  mpu.initialize();
+}
+
+// ===== LOOP =====
+void loop() {
+  if (!client.connected()) reconnect();
+  client.loop();
+
+  if (sendData) {
+
+    // ===== ĐỌC MPU =====
+    mpu.getAcceleration(&ax, &ay, &az);
+
+    // ===== TÍNH RUNG =====
+    int diff = abs(ax - last_ax);
+    int level = 0;
+    String status;
+
+    if (diff > 5000) {
+      level = 2;
+      status = "RUNG MANH";
+    } 
+    else if (diff > 2000) {
+      level = 1;
+      status = "RUNG NHE";
+    } 
+    else {
+      level = 0;
+      status = "BINH THUONG";
+    }
+
+    last_ax = ax;
+
+    // ===== CẢNH BÁO =====
+    if (level == 2) {
+      digitalWrite(LED_PIN, HIGH);
+      digitalWrite(BUZZER_PIN, HIGH);
+    } else {
+      digitalWrite(LED_PIN, LOW);
+      digitalWrite(BUZZER_PIN, LOW);
+    }
+
+    // ===== JSON =====
+    char msg[150];
+    sprintf(msg,
+      "{\"ax\":%d,\"ay\":%d,\"az\":%d,\"status\":\"%s\",\"level\":%d}",
+      ax, ay, az, status.c_str(), level
+    );
+
+    // ===== GỬI MQTT =====
+    client.publish("hung123/test", msg);
+
+    // ===== DEBUG =====
+    Serial.println(msg);
+
+  } else {
+    Serial.println("Paused...");
+  }
+
+  delay(1000);
+}

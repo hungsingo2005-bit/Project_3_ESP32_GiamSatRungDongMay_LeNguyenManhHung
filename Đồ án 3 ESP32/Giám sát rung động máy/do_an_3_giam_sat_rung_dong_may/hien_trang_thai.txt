@@ -1,0 +1,141 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <Wire.h>
+#include <MPU6050.h>
+
+// ===== WIFI =====
+const char* ssid = "Hào Hùng Phát 2";
+const char* password = "Lenguyenmanhhung0901";
+
+// ===== MQTT =====
+const char* mqtt_server = "broker.hivemq.com";
+
+// ===== OBJECT =====
+WiFiClient espClient;
+PubSubClient client(espClient);
+MPU6050 mpu;
+
+// ===== BIẾN =====
+bool sendData = true;
+int16_t ax, ay, az;
+int last_ax = 0;
+
+// ===== WIFI =====
+void setup_wifi() {
+  Serial.print("Connecting WiFi...");
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("\nWiFi connected!");
+}
+
+// ===== MQTT CALLBACK =====
+void callback(char* topic, byte* payload, unsigned int length) {
+  String msg = "";
+
+  for (int i = 0; i < length; i++) {
+    msg += (char)payload[i];
+  }
+
+  msg.trim();   // loại bỏ ký tự thừa
+
+  Serial.print("Received: ");
+  Serial.println(msg);
+
+  if (msg == "OFF") {
+    sendData = false;
+    Serial.println("STOP sending");
+  } 
+  else if (msg == "ON") {
+    sendData = true;
+    Serial.println("START sending");
+  }
+}
+
+// ===== MQTT CONNECT =====
+void reconnect() {
+  while (!client.connected()) {
+    Serial.print("Connecting MQTT...");
+
+    String clientId = "ESP32_" + String(random(1000, 9999));
+
+    if (client.connect(clientId.c_str())) {
+      Serial.println("connected!");
+
+      client.subscribe("hung123/control");  // nhận ON/OFF
+
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again...");
+      delay(2000);
+    }
+  }
+}
+
+// ===== SETUP =====
+void setup() {
+  Serial.begin(115200);
+
+  randomSeed(analogRead(0));  // random chuẩn hơn
+
+  setup_wifi();
+
+  client.setServer(mqtt_server, 1883);
+  client.setCallback(callback);
+
+  // ===== MPU6050 =====
+  Wire.begin(21, 22);
+  mpu.initialize();
+
+  if (mpu.testConnection()) {
+    Serial.println("MPU6050 OK");
+  } else {
+    Serial.println("MPU6050 FAIL");
+  }
+}
+
+// ===== LOOP =====
+void loop() {
+  if (!client.connected()) {
+    reconnect();
+  }
+
+  client.loop();
+
+  if (sendData) {
+
+    // ===== ĐỌC MPU =====
+    mpu.getAcceleration(&ax, &ay, &az);
+
+    // ===== TÍNH RUNG =====
+    int diff = abs(ax - last_ax);
+
+    String status;
+
+    if (diff > 2000) {
+      status = "RUNG MANH";
+    } else {
+      status = "BINH THUONG";
+    }
+
+    last_ax = ax;
+
+    // ===== GỬI MQTT =====
+    client.publish("hung123/test", status.c_str());
+
+    // ===== DEBUG =====
+    Serial.print("ax: "); Serial.print(ax);
+    Serial.print(" | diff: "); Serial.print(diff);
+    Serial.print(" | Status: "); Serial.println(status);
+
+  } else {
+    Serial.println("Paused...");
+  }
+
+  delay(500);
+}
